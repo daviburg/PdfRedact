@@ -130,6 +130,9 @@ public class PdfPigTextLocator : ITextLocator
         string matchedText,
         string pattern)
     {
+        // NOTE: This method rebuilds position mapping for each match.
+        // Future optimization: Build mapping once per page and reuse for all matches.
+        
         // Build a mapping of text positions to words
         var currentIndex = 0;
         var matchingWords = new List<Word>();
@@ -149,6 +152,8 @@ public class PdfPigTextLocator : ITextLocator
             currentIndex = wordEnd;
             
             // Account for spaces between words
+            // NOTE: This is a heuristic that works for most cases but may need refinement
+            // for edge cases with unusual spacing or non-standard text layouts.
             if (currentIndex < startIndex + matchedText.Length)
             {
                 currentIndex++;
