@@ -116,8 +116,8 @@ public class FragmentAwareTextLocatorTests : IDisposable
         {
             Pattern = @"\d{4}",
             IsRegex = true,
-            CaseSensitive = true
-            // FragmentAware is null - should auto-detect and enable for numeric pattern
+            CaseSensitive = true,
+            FragmentAware = true  // Explicitly enable for regex patterns (auto-detect is now conservative)
         };
 
         var locator = new PdfPigTextLocator();
@@ -125,7 +125,7 @@ public class FragmentAwareTextLocatorTests : IDisposable
         // Act
         var plan = locator.LocateText(pdfPath, new[] { rule });
 
-        // Assert - Auto-detection should enable fragment-aware for numeric patterns
+        // Assert - With explicit fragment-aware enabled, should find the match
         Assert.Equal(1, plan.TotalRedactions);
         Assert.Single(plan.Regions);
 
@@ -237,7 +237,40 @@ public class FragmentAwareTextLocatorTests : IDisposable
         // Assert - Should find both the boxed digits and the regular text
         Assert.Equal(2, plan.TotalRedactions);
         Assert.Equal(2, plan.Regions.Count);
+        
+        // Verify the digit region is reasonably sized (not spanning the entire line)
+        var digitRegion = plan.Regions.FirstOrDefault(r => r.MatchedText == "9876");
+        Assert.NotNull(digitRegion);
+        // Digit region should be relatively small (4 digits @ 15pt spacing ~= 60-80pt)
+        Assert.True(digitRegion.Width < 150, $"Digit region width {digitRegion.Width} is too large, suggests over-redaction");
+    }
 
+    [Fact]
+    public void LocateText_BoxedDigits_DoesNotOverRedact()
+    {
+        // Arrange: Create a PDF with boxed digits and other text on same line
+        var pdfPath = Path.Combine(_testDir, "no_over_redact.pdf");
+        CreatePdfWithDigitsAndTextOnSameLine(pdfPath);
+
+        var rule = new RedactionRule
+        {
+            Pattern = @"\d{4}",
+            IsRegex = true,
+            FragmentAware = true
+        };
+
+        var locator = new PdfPigTextLocator();
+
+        // Act
+        var plan = locator.LocateText(pdfPath, new[] { rule });
+
+        // Assert - Should find only the digit sequence, not the entire line
+        Assert.Equal(1, plan.TotalRedactions);
+        var region = plan.Regions[0];
+        Assert.Equal("1234", region.MatchedText);
+        
+        // Region should cover only the 4 digits (4 chars @ 20pt spacing ~= 80-100pt)
+        Assert.True(region.Width < 150, $"Region width {region.Width} is too large, suggesting over-redaction");
     }
 
     /// <summary>
@@ -317,6 +350,36 @@ public class FragmentAwareTextLocatorTests : IDisposable
             gfx.DrawString(digit.ToString(), font, XBrushes.Black, x, y);
             x += 15;
         }
+
+        document.Save(pdfPath);
+        document.Close();
+    }
+
+    /// <summary>
+    /// Creates a PDF with boxed digits and other text on the same line.
+    /// Used to test that we don't over-redact entire lines.
+    /// </summary>
+    private void CreatePdfWithDigitsAndTextOnSameLine(string pdfPath)
+    {
+        var document = new PdfDocument();
+        var page = document.AddPage();
+        var gfx = XGraphics.FromPdfPage(page);
+        var font = new XFont("Arial", 12);
+
+        // Text before digits
+        gfx.DrawString("ID:", font, XBrushes.Black, 50, 400);
+
+        // Boxed digits with spacing
+        double x = 100;
+        double y = 400;
+        foreach (var digit in "1234")
+        {
+            gfx.DrawString(digit.ToString(), font, XBrushes.Black, x, y);
+            x += 20;
+        }
+
+        // Text after digits (on same line)
+        gfx.DrawString("- Active", font, XBrushes.Black, x + 20, 400);
 
         document.Save(pdfPath);
         document.Close();

@@ -142,19 +142,19 @@ public class PdfPigTextLocator : ITextLocator
             return rule.FragmentAware.Value;
         }
 
-        // Auto-detect numeric patterns
+        // Auto-detect: Conservative approach - only enable for literal numeric patterns
+        // For regex patterns, require explicit --fragment-aware flag to avoid false positives
         if (rule.IsRegex)
         {
-            // Check if pattern is purely numeric (e.g., \d+, \d{4}, \d{3}-\d{2}-\d{4})
-            // Simple heuristic: contains \d but doesn't contain letter patterns
-            return rule.Pattern.Contains(@"\d") && 
-                   !rule.Pattern.Contains(@"\w") && 
-                   !rule.Pattern.Contains(@"[a-zA-Z");
+            // Do NOT auto-enable for regex patterns due to complexity of detection
+            // User should explicitly use --fragment-aware if needed
+            return false;
         }
         else
         {
-            // For literal patterns, check if all non-separator chars are digits
-            return rule.Pattern.All(c => char.IsDigit(c) || char.IsPunctuation(c) || char.IsWhiteSpace(c) || c == '-');
+            // For literal patterns, enable if all characters are digits or common separators
+            // This is safe and covers the primary use case (boxed digit forms)
+            return rule.Pattern.All(c => char.IsDigit(c) || c == '-' || c == ' ' || c == '/');
         }
     }
 
@@ -467,13 +467,18 @@ public class PdfPigTextLocator : ITextLocator
     /// <summary>
     /// Internal tokenizer that builds tokens from letters for fragment-aware matching.
     /// Groups letters into lines, then into runs (words or digit sequences).
+    /// Uses a two-pass approach: first creates conservative word tokens, then joins digit sequences.
     /// </summary>
     private class FragmentAwareTokenizer
     {
-        // Threshold multipliers tuned for typical government form spacing (20-25 pt gaps)
-        // where each character occupies ~5-7 pt width
-        private const double DefaultGapThresholdMultiplier = 5.0;  // 5× width handles ~25pt gaps
-        private const double HeightBasedGapMultiplier = 2.5;       // 2.5× height adapts to font size
+        // Conservative threshold for normal word formation (tight kerning)
+        private const double WordGapMultiplier = 1.5;              // 1.5× width for normal words
+        private const double WordHeightMultiplier = 0.5;           // 0.5× height for normal words
+        
+        // Permissive threshold for digit-run formation (boxed forms with wide spacing)
+        private const double DigitRunGapMultiplier = 5.0;          // 5× width handles ~25pt gaps
+        private const double DigitRunHeightMultiplier = 2.5;       // 2.5× height adapts to font size
+        
         private const double MinGapThreshold = 2.0;                 // Minimum to avoid joining touching chars
 
         public List<Token> TokenizePage(Page page)
@@ -511,20 +516,21 @@ public class PdfPigTextLocator : ITextLocator
                 return new List<List<Letter>>();
             }
 
-            // Sort by Y coordinate (bottom to top)
-            var sorted = letters.OrderBy(l => l.GlyphRectangle.Bottom).ToList();
+            // Sort by Y coordinate (top to bottom for reading order)
+            // Use Top descending so topmost text is processed first
+            var sorted = letters.OrderByDescending(l => l.GlyphRectangle.Top).ToList();
             
             // Use adaptive tolerance based on median height
             var yTolerance = Math.Max(LineGroupingTolerance, medianHeight * 0.3);
             
             var lines = new List<List<Letter>>();
             var currentLine = new List<Letter> { sorted[0] };
-            var currentBaseline = sorted[0].GlyphRectangle.Bottom;
+            var currentBaseline = sorted[0].GlyphRectangle.Top;
 
             for (int i = 1; i < sorted.Count; i++)
             {
                 var letter = sorted[i];
-                var letterBaseline = letter.GlyphRectangle.Bottom;
+                var letterBaseline = letter.GlyphRectangle.Top;
 
                 if (Math.Abs(letterBaseline - currentBaseline) <= yTolerance)
                 {
@@ -556,46 +562,132 @@ public class PdfPigTextLocator : ITextLocator
             // Sort letters left to right
             var sorted = lineLetters.OrderBy(l => l.GlyphRectangle.Left).ToList();
 
-            // Calculate gap threshold for run formation
-            // Use the maximum of three thresholds to handle various spacing scenarios:
-            // - MinGapThreshold (2pt): minimum to avoid joining touching characters
-            // - Width-based (5× median): handles typical form field spacing (20-25pt)
-            // - Height-based (2.5× median): adaptive to font size, handles larger fonts
-            var widthThreshold = medianWidth * DefaultGapThresholdMultiplier;
-            var heightThreshold = medianHeight * HeightBasedGapMultiplier;
-            var gapThreshold = Math.Max(MinGapThreshold, Math.Max(widthThreshold, heightThreshold));
-
-            var tokens = new List<Token>();
+            // PASS 1: Build conservative word tokens with tight gap threshold
+            var wordGapThreshold = Math.Max(MinGapThreshold, 
+                Math.Max(medianWidth * WordGapMultiplier, medianHeight * WordHeightMultiplier));
+            
+            var baseTokens = new List<Token>();
             var currentRun = new List<Letter> { sorted[0] };
 
             for (int i = 1; i < sorted.Count; i++)
             {
                 var prevLetter = sorted[i - 1];
                 var currLetter = sorted[i];
-                
-                // Calculate gap between letters
                 var gap = currLetter.GlyphRectangle.Left - prevLetter.GlyphRectangle.Right;
 
-                // Continue current run if gap is within threshold
-                if (gap <= gapThreshold)
+                if (gap <= wordGapThreshold)
                 {
                     currentRun.Add(currLetter);
                 }
                 else
                 {
-                    // Finish current run and start new one
-                    tokens.Add(CreateTokenFromLetters(currentRun));
+                    baseTokens.Add(CreateTokenFromLetters(currentRun));
                     currentRun = new List<Letter> { currLetter };
                 }
             }
 
-            // Add the last run
             if (currentRun.Any())
             {
-                tokens.Add(CreateTokenFromLetters(currentRun));
+                baseTokens.Add(CreateTokenFromLetters(currentRun));
             }
 
-            return tokens;
+            // PASS 2: Join adjacent single-digit tokens into digit-run tokens
+            var digitRunGapThreshold = Math.Max(MinGapThreshold,
+                Math.Max(medianWidth * DigitRunGapMultiplier, medianHeight * DigitRunHeightMultiplier));
+            
+            var finalTokens = new List<Token>();
+            var digitRunTokens = new List<Token>();
+
+            for (int i = 0; i < baseTokens.Count; i++)
+            {
+                var token = baseTokens[i];
+                
+                // Check if this is a single digit
+                if (IsSingleDigitToken(token))
+                {
+                    digitRunTokens.Add(token);
+                    
+                    // Check if we should continue accumulating or finalize the run
+                    bool shouldContinue = false;
+                    if (i + 1 < baseTokens.Count)
+                    {
+                        var nextToken = baseTokens[i + 1];
+                        if (IsSingleDigitToken(nextToken))
+                        {
+                            var gap = nextToken.BoundingBox.Left - token.BoundingBox.Right;
+                            shouldContinue = gap <= digitRunGapThreshold;
+                        }
+                    }
+                    
+                    if (!shouldContinue)
+                    {
+                        // Finalize the digit run
+                        if (digitRunTokens.Count > 1)
+                        {
+                            // Merge into a single digit-run token
+                            finalTokens.Add(MergeTokens(digitRunTokens));
+                        }
+                        else
+                        {
+                            // Single digit, keep as is
+                            finalTokens.Add(token);
+                        }
+                        digitRunTokens.Clear();
+                    }
+                }
+                else
+                {
+                    // Not a digit - finalize any pending digit run first
+                    if (digitRunTokens.Any())
+                    {
+                        if (digitRunTokens.Count > 1)
+                        {
+                            finalTokens.Add(MergeTokens(digitRunTokens));
+                        }
+                        else
+                        {
+                            finalTokens.Add(digitRunTokens[0]);
+                        }
+                        digitRunTokens.Clear();
+                    }
+                    
+                    // Add the non-digit token
+                    finalTokens.Add(token);
+                }
+            }
+
+            return finalTokens;
+        }
+
+        private bool IsSingleDigitToken(Token token)
+        {
+            // Check if token is a single character and it's a digit
+            // Allow single separators like '-' to be included in digit runs
+            if (string.IsNullOrEmpty(token.Text))
+                return false;
+            
+            if (token.Text.Length == 1)
+            {
+                var ch = token.Text[0];
+                return char.IsDigit(ch) || ch == '-';
+            }
+            
+            return false;
+        }
+
+        private Token MergeTokens(List<Token> tokens)
+        {
+            var text = string.Concat(tokens.Select(t => t.Text));
+            var minX = tokens.Min(t => t.BoundingBox.Left);
+            var minY = tokens.Min(t => t.BoundingBox.Bottom);
+            var maxX = tokens.Max(t => t.BoundingBox.Right);
+            var maxY = tokens.Max(t => t.BoundingBox.Top);
+
+            return new Token
+            {
+                Text = text,
+                BoundingBox = new PdfRectangle(minX, minY, maxX, maxY)
+            };
         }
 
         private Token CreateTokenFromLetters(List<Letter> letters)
