@@ -77,7 +77,8 @@ public class PdfPigTextLocator : ITextLocator
 
     /// <summary>
     /// Process a rule using normal word-based tokenization (Pass A).
-    /// This preserves contiguous text matching like "***-**-1234".
+    /// This pass always runs for all rules to preserve contiguous text matching like "***-**-1234".
+    /// Pass A uses PdfPig's word tokenization which groups letters into words based on spacing.
     /// </summary>
     private List<RedactionRegion> ProcessRuleWithWordTokenization(Page page, RedactionRule rule)
     {
@@ -288,22 +289,26 @@ public class PdfPigTextLocator : ITextLocator
     /// </summary>
     private bool IsNumericRegexPattern(string pattern)
     {
-        // Check for common numeric digit patterns
-        // \d{3,9} - matches 3 to 9 digits (covers SSN last-4, full SSN, etc.)
-        // \d{4} - matches exactly 4 digits (SSN last-4)
-        // \d{9} - matches exactly 9 digits (full SSN)
-        // \d{3}-\d{2}-\d{4} - SSN format
+        // Check for common numeric digit patterns that might match boxed digits
+        // Look for specific digit quantifiers that indicate numeric sequences
         
-        // Simple heuristic: contains \d with quantifiers indicating numeric sequences
-        if (pattern.Contains(@"\d{4}") || 
-            pattern.Contains(@"\d{9}") ||
-            pattern.Contains(@"\d{3}") && pattern.Contains(@"\d{2}"))
+        // Check for exact digit counts commonly used for SSN, last-4, etc.
+        // \d{4} - matches exactly 4 digits (SSN last-4)
+        // \d{9} - matches exactly 9 digits (full SSN without separators)
+        if (pattern.Contains(@"\d{4}") || pattern.Contains(@"\d{9}"))
         {
             return true;
         }
 
-        // Check for digit patterns without braces but with + or * quantifiers
-        // \d+ or \d* followed by specific counts might indicate numeric matching
+        // Check for SSN-like patterns with separators: \d{3}-\d{2}-\d{4}
+        // Look for combination of \d{3} and \d{2} which suggests SSN format
+        if (pattern.Contains(@"\d{3}") && pattern.Contains(@"\d{2}"))
+        {
+            return true;
+        }
+
+        // Check for digit patterns with range quantifiers indicating 3-9 digits
+        // Matches patterns like \d{3,9} or \d{3} through \d{9}
         if (System.Text.RegularExpressions.Regex.IsMatch(pattern, @"\\d\{[3-9]\}"))
         {
             return true;

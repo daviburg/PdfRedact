@@ -469,7 +469,7 @@ public class FragmentAwareTextLocatorTests : IDisposable
         // Contiguous text: "***-**-1234" drawn as a single string
         gfx.DrawString("***-**-1234", font, XBrushes.Black, 100, 450);
 
-        // Boxed digits: "1 2 3 4" drawn as separate characters with spacing
+        // Boxed digits: each digit of "1234" drawn separately with spacing
         double x = 100;
         double y = 400;
         foreach (var digit in "1234")
