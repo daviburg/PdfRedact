@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.RegularExpressions;
 using PdfRedact.Core.Models;
 using UglyToad.PdfPig;
@@ -7,9 +8,13 @@ namespace PdfRedact.Core.Services;
 
 /// <summary>
 /// Implementation of text location using PdfPig library.
+/// Coordinates are in PDF user space with bottom-left origin, measured in points.
+/// Page numbers are 1-based.
 /// </summary>
 public class PdfPigTextLocator : ITextLocator
 {
+    private const double LineGroupingTolerance = 2.0; // Points tolerance for grouping words on same line
+
     /// <inheritdoc/>
     public RedactionPlan LocateText(string pdfPath, IEnumerable<RedactionRule> rules)
     {
@@ -38,148 +43,224 @@ public class PdfPigTextLocator : ITextLocator
 
         foreach (var page in document.GetPages())
         {
-            var pageText = page.Text;
-            var words = page.GetWords().ToList();
-
-            foreach (var rule in rulesList)
-            {
-                var regions = FindMatchingRegions(page, pageText, words, rule);
-                plan.Regions.AddRange(regions);
-            }
+            var regions = ProcessPage(page, rulesList);
+            plan.Regions.AddRange(regions);
         }
 
         return plan;
     }
 
-    private List<RedactionRegion> FindMatchingRegions(
-        Page page,
-        string pageText,
-        List<Word> words,
-        RedactionRule rule)
+    private List<RedactionRegion> ProcessPage(Page page, List<RedactionRule> rules)
     {
-        var regions = new List<RedactionRegion>();
-
-        if (rule.IsRegex)
-        {
-            regions.AddRange(FindRegexMatches(page, pageText, words, rule));
-        }
-        else
-        {
-            regions.AddRange(FindLiteralMatches(page, pageText, words, rule));
-        }
-
-        return regions;
-    }
-
-    private List<RedactionRegion> FindRegexMatches(
-        Page page,
-        string pageText,
-        List<Word> words,
-        RedactionRule rule)
-    {
-        var regions = new List<RedactionRegion>();
-        var options = rule.CaseSensitive ? RegexOptions.None : RegexOptions.IgnoreCase;
-        var regex = new Regex(rule.Pattern, options);
-
-        var matches = regex.Matches(pageText);
-        foreach (Match match in matches)
-        {
-            // Find words that overlap with this match
-            var matchStart = match.Index;
-            var matchEnd = match.Index + match.Length;
-
-            var region = GetRegionForTextRange(page, words, matchStart, matchEnd, match.Value, rule.Pattern);
-            if (region != null)
-            {
-                regions.Add(region);
-            }
-        }
-
-        return regions;
-    }
-
-    private List<RedactionRegion> FindLiteralMatches(
-        Page page,
-        string pageText,
-        List<Word> words,
-        RedactionRule rule)
-    {
-        var regions = new List<RedactionRegion>();
-        var comparison = rule.CaseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
-
-        int index = 0;
-        while ((index = pageText.IndexOf(rule.Pattern, index, comparison)) != -1)
-        {
-            var matchEnd = index + rule.Pattern.Length;
-            var region = GetRegionForTextRange(page, words, index, matchEnd, rule.Pattern, rule.Pattern);
-            if (region != null)
-            {
-                regions.Add(region);
-            }
-            index = matchEnd;
-        }
-
-        return regions;
-    }
-
-    private RedactionRegion? GetRegionForTextRange(
-        Page page,
-        List<Word> words,
-        int startIndex,
-        int endIndex,
-        string matchedText,
-        string pattern)
-    {
-        // NOTE: This method rebuilds position mapping for each match.
-        // Future optimization: Build mapping once per page and reuse for all matches.
+        var words = page.GetWords().OrderBy(w => w.BoundingBox.Bottom).ThenBy(w => w.BoundingBox.Left).ToList();
         
-        // Build a mapping of text positions to words
-        var currentIndex = 0;
-        var matchingWords = new List<Word>();
+        // Build synthetic searchable string with deterministic word-span mapping
+        var (searchText, wordSpans) = BuildSearchableText(words);
+
+        var regions = new List<RedactionRegion>();
+
+        foreach (var rule in rules)
+        {
+            var matches = FindMatches(searchText, rule);
+            
+            foreach (var match in matches)
+            {
+                // Find words that overlap with this match
+                var matchingWords = GetMatchingWords(wordSpans, match.Start, match.End);
+                
+                if (matchingWords.Any())
+                {
+                    // Group words by line to avoid over-masking content between lines
+                    var lineGroups = GroupWordsByLine(matchingWords);
+                    
+                    foreach (var lineGroup in lineGroups)
+                    {
+                        var region = CreateRedactionRegion(page, lineGroup, match.Text, rule.Pattern);
+                        regions.Add(region);
+                    }
+                }
+            }
+        }
+
+        return regions;
+    }
+
+    /// <summary>
+    /// Builds a searchable text string from words with deterministic span mapping.
+    /// Each word is separated by a single space delimiter.
+    /// </summary>
+    private (string searchText, List<WordSpan> wordSpans) BuildSearchableText(List<Word> words)
+    {
+        var stringBuilder = new StringBuilder();
+        var wordSpans = new List<WordSpan>();
 
         foreach (var word in words)
         {
-            var wordText = word.Text;
-            var wordStart = currentIndex;
-            var wordEnd = currentIndex + wordText.Length;
+            var startIndex = stringBuilder.Length;
+            stringBuilder.Append(word.Text);
+            var endIndex = stringBuilder.Length;
 
-            // Check if this word overlaps with our match
-            if (wordEnd > startIndex && wordStart < endIndex)
+            wordSpans.Add(new WordSpan
             {
-                matchingWords.Add(word);
-            }
+                Word = word,
+                StartIndex = startIndex,
+                EndIndex = endIndex
+            });
 
-            currentIndex = wordEnd;
-            
-            // Account for spaces between words
-            // NOTE: This is a heuristic that works for most cases but may need refinement
-            // for edge cases with unusual spacing or non-standard text layouts.
-            if (currentIndex < startIndex + matchedText.Length)
-            {
-                currentIndex++;
-            }
+            // Add space delimiter between words
+            stringBuilder.Append(' ');
         }
 
-        if (!matchingWords.Any())
+        return (stringBuilder.ToString(), wordSpans);
+    }
+
+    private List<MatchInfo> FindMatches(string searchText, RedactionRule rule)
+    {
+        var matches = new List<MatchInfo>();
+
+        if (rule.IsRegex)
         {
-            return null;
+            var options = BuildRegexOptions(rule);
+            var regex = new Regex(rule.Pattern, options);
+            
+            foreach (Match match in regex.Matches(searchText))
+            {
+                matches.Add(new MatchInfo
+                {
+                    Start = match.Index,
+                    End = match.Index + match.Length,
+                    Text = match.Value
+                });
+            }
+        }
+        else
+        {
+            var comparison = rule.CaseSensitive 
+                ? StringComparison.Ordinal 
+                : StringComparison.OrdinalIgnoreCase;
+
+            int index = 0;
+            while ((index = searchText.IndexOf(rule.Pattern, index, comparison)) != -1)
+            {
+                matches.Add(new MatchInfo
+                {
+                    Start = index,
+                    End = index + rule.Pattern.Length,
+                    Text = rule.Pattern
+                });
+                index += rule.Pattern.Length;
+            }
         }
 
-        // Calculate bounding box for all matching words
-        var minX = matchingWords.Min(w => w.BoundingBox.Left);
-        var minY = matchingWords.Min(w => w.BoundingBox.Bottom);
-        var maxX = matchingWords.Max(w => w.BoundingBox.Right);
-        var maxY = matchingWords.Max(w => w.BoundingBox.Top);
+        return matches;
+    }
+
+    private RegexOptions BuildRegexOptions(RedactionRule rule)
+    {
+        var options = RegexOptions.CultureInvariant;
+        
+        if (!rule.CaseSensitive)
+        {
+            options |= RegexOptions.IgnoreCase;
+        }
+
+        // Use explicit RegexOptions from rule if provided, otherwise use defaults
+        if (rule.RegexOptions.HasValue)
+        {
+            options = rule.RegexOptions.Value;
+        }
+
+        return options;
+    }
+
+    private List<Word> GetMatchingWords(List<WordSpan> wordSpans, int matchStart, int matchEnd)
+    {
+        return wordSpans
+            .Where(span => span.EndIndex > matchStart && span.StartIndex < matchEnd)
+            .Select(span => span.Word)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Groups words by line based on Y-coordinate proximity.
+    /// Words within LineGroupingTolerance of each other are considered on the same line.
+    /// </summary>
+    private List<List<Word>> GroupWordsByLine(List<Word> words)
+    {
+        if (!words.Any())
+        {
+            return new List<List<Word>>();
+        }
+
+        var sorted = words.OrderBy(w => w.BoundingBox.Bottom).ToList();
+        var lineGroups = new List<List<Word>>();
+        var currentLine = new List<Word> { sorted[0] };
+        var currentBaseline = sorted[0].BoundingBox.Bottom;
+
+        for (int i = 1; i < sorted.Count; i++)
+        {
+            var word = sorted[i];
+            var wordBaseline = word.BoundingBox.Bottom;
+
+            if (Math.Abs(wordBaseline - currentBaseline) <= LineGroupingTolerance)
+            {
+                // Same line
+                currentLine.Add(word);
+            }
+            else
+            {
+                // New line
+                lineGroups.Add(currentLine);
+                currentLine = new List<Word> { word };
+                currentBaseline = wordBaseline;
+            }
+        }
+
+        // Add the last line
+        if (currentLine.Any())
+        {
+            lineGroups.Add(currentLine);
+        }
+
+        return lineGroups;
+    }
+
+    /// <summary>
+    /// Creates a redaction region from a group of words.
+    /// Coordinates are in PDF user space (bottom-left origin, points).
+    /// PageNumber is 1-based as per PdfPig convention.
+    /// </summary>
+    private RedactionRegion CreateRedactionRegion(Page page, List<Word> words, string matchedText, string pattern)
+    {
+        var minX = words.Min(w => w.BoundingBox.Left);
+        var minY = words.Min(w => w.BoundingBox.Bottom);
+        var maxX = words.Max(w => w.BoundingBox.Right);
+        var maxY = words.Max(w => w.BoundingBox.Top);
 
         return new RedactionRegion
         {
-            PageNumber = page.Number,
+            PageNumber = page.Number, // 1-based page number
             X = minX,
             Y = minY,
             Width = maxX - minX,
             Height = maxY - minY,
             MatchedText = matchedText,
-            RulePattern = pattern
+            RulePattern = pattern,
+            PageRotation = page.Rotation.Value // Store rotation for proper application
         };
+    }
+
+    private class WordSpan
+    {
+        public Word Word { get; set; } = null!;
+        public int StartIndex { get; set; }
+        public int EndIndex { get; set; }
+    }
+
+    private class MatchInfo
+    {
+        public int Start { get; set; }
+        public int End { get; set; }
+        public string Text { get; set; } = string.Empty;
     }
 }

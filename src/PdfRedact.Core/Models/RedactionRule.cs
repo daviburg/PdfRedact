@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 namespace PdfRedact.Core.Models;
 
 /// <summary>
@@ -25,4 +27,11 @@ public class RedactionRule
     /// Optional description of what this rule is matching.
     /// </summary>
     public string? Description { get; set; }
+
+    /// <summary>
+    /// Optional explicit RegexOptions for regex matching.
+    /// If not specified, defaults are: CultureInvariant | IgnoreCase (when CaseSensitive=false).
+    /// Allows control over culture behavior, compilation, and other advanced options.
+    /// </summary>
+    public RegexOptions? RegexOptions { get; set; }
 }
