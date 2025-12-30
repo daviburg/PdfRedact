@@ -55,80 +55,196 @@ public class PdfPigTextLocator : ITextLocator
     {
         var regions = new List<RedactionRegion>();
 
-        // Group rules by fragment-aware mode to optimize processing
-        var fragmentAwareRules = new List<RedactionRule>();
-        var wordBasedRules = new List<RedactionRule>();
-
         foreach (var rule in rules)
         {
+            // PASS A: Always run normal word-based matching
+            var passARegions = ProcessRuleWithWordTokenization(page, rule);
+            regions.AddRange(passARegions);
+
+            // PASS B: Run fragment-aware matching if enabled for this rule
             if (ShouldUseFragmentAwareMode(rule))
             {
-                fragmentAwareRules.Add(rule);
-            }
-            else
-            {
-                wordBasedRules.Add(rule);
+                var passBRegions = ProcessRuleWithFragmentAwareTokenization(page, rule);
+                regions.AddRange(passBRegions);
             }
         }
 
-        // Process fragment-aware rules using letter-level tokenization
-        if (fragmentAwareRules.Any())
+        // Deduplicate overlapping regions from both passes
+        var deduplicated = DeduplicateRegions(regions);
+        
+        return deduplicated;
+    }
+
+    /// <summary>
+    /// Process a rule using normal word-based tokenization (Pass A).
+    /// This preserves contiguous text matching like "***-**-1234".
+    /// </summary>
+    private List<RedactionRegion> ProcessRuleWithWordTokenization(Page page, RedactionRule rule)
+    {
+        var regions = new List<RedactionRegion>();
+        var words = page.GetWords().OrderBy(w => w.BoundingBox.Bottom).ThenBy(w => w.BoundingBox.Left).ToList();
+        var (searchText, wordSpans) = BuildSearchableText(words);
+
+        var matches = FindMatches(searchText, rule);
+        
+        foreach (var match in matches)
         {
-            var tokenizer = new FragmentAwareTokenizer();
-            var tokens = tokenizer.TokenizePage(page);
-            var (searchText, tokenSpans) = BuildSearchableTextFromTokens(tokens);
-
-            foreach (var rule in fragmentAwareRules)
+            var matchingWords = GetMatchingWords(wordSpans, match.Start, match.End);
+            
+            if (matchingWords.Any())
             {
-                var matches = FindMatches(searchText, rule);
+                var lineGroups = GroupWordsByLine(matchingWords);
                 
-                foreach (var match in matches)
+                foreach (var lineGroup in lineGroups)
                 {
-                    var matchingTokens = GetMatchingTokens(tokenSpans, match.Start, match.End);
-                    
-                    if (matchingTokens.Any())
-                    {
-                        var lineGroups = GroupTokensByLine(matchingTokens);
-                        
-                        foreach (var lineGroup in lineGroups)
-                        {
-                            var region = CreateRedactionRegionFromTokens(page, lineGroup, match.Text, rule.Pattern);
-                            regions.Add(region);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Process word-based rules using existing word tokenization
-        if (wordBasedRules.Any())
-        {
-            var words = page.GetWords().OrderBy(w => w.BoundingBox.Bottom).ThenBy(w => w.BoundingBox.Left).ToList();
-            var (searchText, wordSpans) = BuildSearchableText(words);
-
-            foreach (var rule in wordBasedRules)
-            {
-                var matches = FindMatches(searchText, rule);
-                
-                foreach (var match in matches)
-                {
-                    var matchingWords = GetMatchingWords(wordSpans, match.Start, match.End);
-                    
-                    if (matchingWords.Any())
-                    {
-                        var lineGroups = GroupWordsByLine(matchingWords);
-                        
-                        foreach (var lineGroup in lineGroups)
-                        {
-                            var region = CreateRedactionRegion(page, lineGroup, match.Text, rule.Pattern);
-                            regions.Add(region);
-                        }
-                    }
+                    var region = CreateRedactionRegion(page, lineGroup, match.Text, rule.Pattern);
+                    regions.Add(region);
                 }
             }
         }
 
         return regions;
+    }
+
+    /// <summary>
+    /// Process a rule using fragment-aware tokenization (Pass B).
+    /// This handles boxed digits and fragmented text sequences.
+    /// </summary>
+    private List<RedactionRegion> ProcessRuleWithFragmentAwareTokenization(Page page, RedactionRule rule)
+    {
+        var regions = new List<RedactionRegion>();
+        var tokenizer = new FragmentAwareTokenizer();
+        var tokens = tokenizer.TokenizePage(page);
+        var (searchText, tokenSpans) = BuildSearchableTextFromTokens(tokens);
+
+        var matches = FindMatches(searchText, rule);
+        
+        foreach (var match in matches)
+        {
+            var matchingTokens = GetMatchingTokens(tokenSpans, match.Start, match.End);
+            
+            if (matchingTokens.Any())
+            {
+                var lineGroups = GroupTokensByLine(matchingTokens);
+                
+                foreach (var lineGroup in lineGroups)
+                {
+                    var region = CreateRedactionRegionFromTokens(page, lineGroup, match.Text, rule.Pattern);
+                    regions.Add(region);
+                }
+            }
+        }
+
+        return regions;
+    }
+
+    /// <summary>
+    /// Deduplicates overlapping regions from multiple detection passes.
+    /// Merges regions on the same page that significantly overlap.
+    /// </summary>
+    private List<RedactionRegion> DeduplicateRegions(List<RedactionRegion> regions)
+    {
+        if (regions.Count <= 1)
+        {
+            return regions;
+        }
+
+        var result = new List<RedactionRegion>();
+        var processed = new HashSet<int>();
+
+        for (int i = 0; i < regions.Count; i++)
+        {
+            if (processed.Contains(i))
+            {
+                continue;
+            }
+
+            var region = regions[i];
+            var toMerge = new List<RedactionRegion> { region };
+            processed.Add(i);
+
+            // Find overlapping regions on the same page
+            for (int j = i + 1; j < regions.Count; j++)
+            {
+                if (processed.Contains(j))
+                {
+                    continue;
+                }
+
+                var other = regions[j];
+                
+                if (region.PageNumber == other.PageNumber && RegionsOverlap(region, other))
+                {
+                    toMerge.Add(other);
+                    processed.Add(j);
+                }
+            }
+
+            // Merge all overlapping regions into one
+            if (toMerge.Count == 1)
+            {
+                result.Add(region);
+            }
+            else
+            {
+                result.Add(MergeRegions(toMerge));
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Determines if two regions overlap significantly (>50% intersection area).
+    /// </summary>
+    private bool RegionsOverlap(RedactionRegion a, RedactionRegion b)
+    {
+        // Calculate intersection rectangle
+        var left = Math.Max(a.X, b.X);
+        var bottom = Math.Max(a.Y, b.Y);
+        var right = Math.Min(a.X + a.Width, b.X + b.Width);
+        var top = Math.Min(a.Y + a.Height, b.Y + b.Height);
+
+        // Check if there's any overlap
+        if (right <= left || top <= bottom)
+        {
+            return false;
+        }
+
+        // Calculate intersection area
+        var intersectionArea = (right - left) * (top - bottom);
+        var areaA = a.Width * a.Height;
+        var areaB = b.Width * b.Height;
+        var minArea = Math.Min(areaA, areaB);
+
+        // Consider overlapping if intersection is more than 50% of the smaller region
+        return intersectionArea > (minArea * 0.5);
+    }
+
+    /// <summary>
+    /// Merges multiple regions into a single region covering all of them.
+    /// </summary>
+    private RedactionRegion MergeRegions(List<RedactionRegion> regions)
+    {
+        var minX = regions.Min(r => r.X);
+        var minY = regions.Min(r => r.Y);
+        var maxX = regions.Max(r => r.X + r.Width);
+        var maxY = regions.Max(r => r.Y + r.Height);
+
+        // Combine matched text (prefer the longest match)
+        var longestMatch = regions.OrderByDescending(r => r.MatchedText?.Length ?? 0).First();
+
+        return new RedactionRegion
+        {
+            PageNumber = regions[0].PageNumber,
+            X = minX,
+            Y = minY,
+            Width = maxX - minX,
+            Height = maxY - minY,
+            MatchedText = longestMatch.MatchedText,
+            RulePattern = longestMatch.RulePattern,
+            PageRotation = regions[0].PageRotation
+        };
     }
 
     /// <summary>
@@ -142,20 +258,58 @@ public class PdfPigTextLocator : ITextLocator
             return rule.FragmentAware.Value;
         }
 
-        // Auto-detect: Conservative approach - only enable for literal numeric patterns
-        // For regex patterns, require explicit --fragment-aware flag to avoid false positives
+        // Auto-detect based on pattern type
         if (rule.IsRegex)
         {
-            // Do NOT auto-enable for regex patterns due to complexity of detection
-            // User should explicitly use --fragment-aware if needed
-            return false;
+            // Auto-enable for regex patterns that clearly match numeric sequences
+            // Look for common numeric patterns: \d{3,9}, SSN patterns, etc.
+            return IsNumericRegexPattern(rule.Pattern);
         }
         else
         {
-            // For literal patterns, enable if all characters are digits or common separators
-            // This is safe and covers the primary use case (boxed digit forms)
-            return rule.Pattern.All(c => char.IsDigit(c) || c == '-' || c == ' ' || c == '/');
+            // For literal patterns, enable if:
+            // 1. All characters are digits or common separators, AND
+            // 2. Length is appropriate (3-9 characters typical for SSN last-4, full SSN, etc.)
+            if (string.IsNullOrEmpty(rule.Pattern))
+            {
+                return false;
+            }
+
+            var isNumericWithSeparators = rule.Pattern.All(c => char.IsDigit(c) || c == '-' || c == ' ' || c == '/');
+            var digitCount = rule.Pattern.Count(char.IsDigit);
+            
+            // Enable for patterns with 3-9 digits (covers SSN last-4, full SSN, etc.)
+            return isNumericWithSeparators && digitCount >= 3 && digitCount <= 9;
         }
+    }
+
+    /// <summary>
+    /// Determines if a regex pattern is likely matching numeric sequences suitable for fragment-aware mode.
+    /// </summary>
+    private bool IsNumericRegexPattern(string pattern)
+    {
+        // Check for common numeric digit patterns
+        // \d{3,9} - matches 3 to 9 digits (covers SSN last-4, full SSN, etc.)
+        // \d{4} - matches exactly 4 digits (SSN last-4)
+        // \d{9} - matches exactly 9 digits (full SSN)
+        // \d{3}-\d{2}-\d{4} - SSN format
+        
+        // Simple heuristic: contains \d with quantifiers indicating numeric sequences
+        if (pattern.Contains(@"\d{4}") || 
+            pattern.Contains(@"\d{9}") ||
+            pattern.Contains(@"\d{3}") && pattern.Contains(@"\d{2}"))
+        {
+            return true;
+        }
+
+        // Check for digit patterns without braces but with + or * quantifiers
+        // \d+ or \d* followed by specific counts might indicate numeric matching
+        if (System.Text.RegularExpressions.Regex.IsMatch(pattern, @"\\d\{[3-9]\}"))
+        {
+            return true;
+        }
+
+        return false;
     }
 
     /// <summary>
