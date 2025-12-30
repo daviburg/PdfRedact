@@ -16,6 +16,8 @@ public static class PlanCommand
         var patternOption = CreatePatternOption();
         var regexOption = CreateRegexOption();
         var caseSensitiveOption = CreateCaseSensitiveOption();
+        var fragmentAwareOption = CreateFragmentAwareOption();
+        var noFragmentAwareOption = CreateNoFragmentAwareOption();
 
         var command = new Command("plan", "Create a redaction plan by locating text in a PDF")
         {
@@ -23,18 +25,22 @@ public static class PlanCommand
             outputOption,
             patternOption,
             regexOption,
-            caseSensitiveOption
+            caseSensitiveOption,
+            fragmentAwareOption,
+            noFragmentAwareOption
         };
 
-        command.SetHandler(async (input, output, patterns, isRegex, caseSensitive) =>
+        command.SetHandler(async (input, output, patterns, isRegex, caseSensitive, fragmentAware, noFragmentAware) =>
         {
-            await ExecutePlanCommand(input, output, patterns, isRegex, caseSensitive);
+            await ExecutePlanCommand(input, output, patterns, isRegex, caseSensitive, fragmentAware, noFragmentAware);
         },
         inputOption,
         outputOption,
         patternOption,
         regexOption,
-        caseSensitiveOption);
+        caseSensitiveOption,
+        fragmentAwareOption,
+        noFragmentAwareOption);
 
         return command;
     }
@@ -88,12 +94,32 @@ public static class PlanCommand
         );
     }
 
+    private static Option<bool> CreateFragmentAwareOption()
+    {
+        return new Option<bool>(
+            aliases: new[] { "--fragment-aware" },
+            description: "Force enable fragment-aware mode for matching boxed digits and fragmented text",
+            getDefaultValue: () => false
+        );
+    }
+
+    private static Option<bool> CreateNoFragmentAwareOption()
+    {
+        return new Option<bool>(
+            aliases: new[] { "--no-fragment-aware" },
+            description: "Force disable fragment-aware mode (use word-based matching only)",
+            getDefaultValue: () => false
+        );
+    }
+
     private static async Task ExecutePlanCommand(
         string input,
         string output,
         string[] patterns,
         bool isRegex,
-        bool caseSensitive)
+        bool caseSensitive,
+        bool fragmentAware,
+        bool noFragmentAware)
     {
         try
         {
@@ -101,13 +127,37 @@ public static class PlanCommand
             Console.WriteLine($"Patterns ({patterns.Length}): {string.Join(", ", patterns)}");
             Console.WriteLine($"Mode: {(isRegex ? "Regex" : "Literal")}");
             Console.WriteLine($"Case-sensitive: {caseSensitive}");
+            
+            // Determine fragment-aware setting
+            bool? fragmentAwareSetting = null;
+            if (fragmentAware && noFragmentAware)
+            {
+                Console.Error.WriteLine("Error: Cannot specify both --fragment-aware and --no-fragment-aware");
+                Environment.Exit(1);
+            }
+            else if (fragmentAware)
+            {
+                fragmentAwareSetting = true;
+                Console.WriteLine($"Fragment-aware: enabled (forced)");
+            }
+            else if (noFragmentAware)
+            {
+                fragmentAwareSetting = false;
+                Console.WriteLine($"Fragment-aware: disabled (forced)");
+            }
+            else
+            {
+                Console.WriteLine($"Fragment-aware: auto-detect (enabled for numeric patterns)");
+            }
+            
             Console.WriteLine();
 
             var rules = patterns.Select(p => new RedactionRule
             {
                 Pattern = p,
                 IsRegex = isRegex,
-                CaseSensitive = caseSensitive
+                CaseSensitive = caseSensitive,
+                FragmentAware = fragmentAwareSetting
             }).ToList();
 
             var locator = new PdfPigTextLocator();

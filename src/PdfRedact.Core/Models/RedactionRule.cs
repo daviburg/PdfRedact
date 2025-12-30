@@ -34,4 +34,11 @@ public class RedactionRule
     /// Allows control over culture behavior, compilation, and other advanced options.
     /// </summary>
     public RegexOptions? RegexOptions { get; set; }
+
+    /// <summary>
+    /// Whether to enable fragment-aware matching mode.
+    /// When enabled, uses letter-level tokenization to join fragmented single-character sequences.
+    /// When null, auto-detects based on pattern (enabled for numeric patterns).
+    /// </summary>
+    public bool? FragmentAware { get; set; }
 }
