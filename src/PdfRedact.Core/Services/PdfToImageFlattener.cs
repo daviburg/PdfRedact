@@ -27,14 +27,14 @@ public class PdfToImageFlattener : IPageFlattener
             throw new ArgumentException("Output path cannot be null or empty", nameof(outputPath));
         }
 
-        if (!File.Exists(sourcePath))
-        {
-            throw new FileNotFoundException("Source PDF file not found", sourcePath);
-        }
-
         if (dpi < 72 || dpi > 600)
         {
             throw new ArgumentException("DPI must be between 72 and 600", nameof(dpi));
+        }
+
+        if (!File.Exists(sourcePath))
+        {
+            throw new FileNotFoundException("Source PDF file not found", sourcePath);
         }
 
         // Create output directory if it doesn't exist
