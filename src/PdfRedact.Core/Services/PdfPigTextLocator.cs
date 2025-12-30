@@ -468,8 +468,8 @@ public class PdfPigTextLocator : ITextLocator
     /// </summary>
     private class FragmentAwareTokenizer
     {
-        private const double DefaultGapThresholdMultiplier = 3.0;
-        private const double HeightBasedGapMultiplier = 0.8;
+        private const double DefaultGapThresholdMultiplier = 5.0;  // Increased to handle boxed forms with wider spacing
+        private const double HeightBasedGapMultiplier = 2.5;  // Increased for better form field handling
         private const double MinGapThreshold = 2.0;
 
         public List<Token> TokenizePage(Page page)

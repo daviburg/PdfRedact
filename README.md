@@ -5,6 +5,7 @@ PdfRedact is a free, open-source .NET 8 tool for masking sensitive text in PDFs.
 ## Features
 
 - **Text Location**: Uses PdfPig to locate sensitive text via regex patterns or literal text matching
+- **Fragment-Aware Matching**: Intelligently handles "boxed digits" and fragmented text sequences (common in government forms like IRS Form 8879)
 - **Redaction Masking**: Applies opaque black overlays using PDFsharp to visually hide sensitive information
 - **Two-Step Workflow**: Create redaction plans first, review them, then apply
 - **One-Step Workflow**: Combine plan creation and application in a single command
@@ -92,6 +93,8 @@ dotnet run --project src/PdfRedact.CLI/PdfRedact.CLI.csproj -- plan \
 - `-p, --pattern` (required): Text pattern(s) to redact (can specify multiple times)
 - `-r, --regex`: Treat patterns as regular expressions (default: false)
 - `-c, --case-sensitive`: Case-sensitive matching (default: true)
+- `--fragment-aware`: Force enable fragment-aware mode for boxed digits/fragmented text
+- `--no-fragment-aware`: Force disable fragment-aware mode (use word-based matching only)
 
 #### 2. `apply` - Apply a Redaction Plan
 
@@ -134,6 +137,58 @@ dotnet run --project src/PdfRedact.CLI/PdfRedact.CLI.csproj -- redact \
 - `-r, --regex`: Treat patterns as regular expressions (default: false)
 - `-c, --case-sensitive`: Case-sensitive matching (default: true)
 - `-s, --save-plan`: Optional path to save the redaction plan
+- `--fragment-aware`: Force enable fragment-aware mode for boxed digits/fragmented text
+- `--no-fragment-aware`: Force disable fragment-aware mode (use word-based matching only)
+
+## Fragment-Aware Matching
+
+PdfRedact includes intelligent fragment-aware matching for handling "boxed digits" and other fragmented text sequences commonly found in government forms (e.g., IRS Form 8879) and standardized documents where each character is placed in a separate box.
+
+### How It Works
+
+- **Letter-Level Tokenization**: Instead of relying on PDF word boundaries, fragment-aware mode analyzes individual letters and groups them into runs based on spatial proximity.
+- **Adaptive Thresholds**: Uses character height and width to determine appropriate gap thresholds for joining characters.
+- **Auto-Detection**: Automatically enabled for numeric patterns (e.g., `\d{4}`, `\d{9}`) when not explicitly specified.
+
+### When to Use
+
+Fragment-aware mode is ideal for:
+- Tax forms with boxed SSN or EIN fields
+- Government forms with separated digit entry fields
+- Standardized forms where each character has its own box
+- Any PDF where numeric sequences are visually fragmented
+
+### Usage
+
+```bash
+# Auto-detect (enabled for numeric patterns like \d{4})
+dotnet run --project src/PdfRedact.CLI/PdfRedact.CLI.csproj -- plan \
+  -i form8879.pdf \
+  -o plan.json \
+  -p "\d{4}" \
+  --regex
+
+# Force enable for all patterns
+dotnet run --project src/PdfRedact.CLI/PdfRedact.CLI.csproj -- plan \
+  -i form.pdf \
+  -o plan.json \
+  -p "ABC123" \
+  --fragment-aware
+
+# Force disable to use only word-based matching
+dotnet run --project src/PdfRedact.CLI/PdfRedact.CLI.csproj -- plan \
+  -i document.pdf \
+  -o plan.json \
+  -p "\d{4}" \
+  --regex \
+  --no-fragment-aware
+```
+
+### Tuning
+
+The default thresholds work well for most documents, but the algorithm adapts to each page's median character dimensions. If you encounter edge cases, the heuristics are:
+- **Line grouping**: Characters within ~30% of median height are grouped into lines
+- **Run formation**: Characters are joined if gap ≤ max(2pt, 3× median width, 0.8× median height)
 
 ## Examples
 
@@ -162,6 +217,19 @@ dotnet run --project src/PdfRedact.CLI/PdfRedact.CLI.csproj -- redact \
   -o redacted.pdf \
   -p "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}" \
   --regex
+```
+
+### Redact Boxed Digits (Government Forms)
+```bash
+# Redact last 4 digits of SSN in form with boxed entry fields
+dotnet run --project src/PdfRedact.CLI/PdfRedact.CLI.csproj -- redact \
+  -i form8879.pdf \
+  -o redacted.pdf \
+  -p "\d{4}" \
+  --regex
+
+# Note: Fragment-aware mode auto-enables for numeric patterns
+# The tool will automatically handle separated digits in boxes
 ```
 
 ### Review Before Applying
