@@ -17,6 +17,8 @@ public static class RedactCommand
         var regexOption = CreateRegexOption();
         var caseSensitiveOption = CreateCaseSensitiveOption();
         var savePlanOption = CreateSavePlanOption();
+        var fragmentAwareOption = CreateFragmentAwareOption();
+        var noFragmentAwareOption = CreateNoFragmentAwareOption();
 
         var command = new Command("redact", "Create and apply redactions in a single step (plan + apply)")
         {
@@ -25,19 +27,23 @@ public static class RedactCommand
             patternOption,
             regexOption,
             caseSensitiveOption,
-            savePlanOption
+            savePlanOption,
+            fragmentAwareOption,
+            noFragmentAwareOption
         };
 
-        command.SetHandler(async (input, output, patterns, isRegex, caseSensitive, savePlan) =>
+        command.SetHandler(async (input, output, patterns, isRegex, caseSensitive, savePlan, fragmentAware, noFragmentAware) =>
         {
-            await ExecuteRedactCommand(input, output, patterns, isRegex, caseSensitive, savePlan);
+            await ExecuteRedactCommand(input, output, patterns, isRegex, caseSensitive, savePlan, fragmentAware, noFragmentAware);
         },
         inputOption,
         outputOption,
         patternOption,
         regexOption,
         caseSensitiveOption,
-        savePlanOption);
+        savePlanOption,
+        fragmentAwareOption,
+        noFragmentAwareOption);
 
         return command;
     }
@@ -99,13 +105,33 @@ public static class RedactCommand
         );
     }
 
+    private static Option<bool> CreateFragmentAwareOption()
+    {
+        return new Option<bool>(
+            aliases: new[] { "--fragment-aware" },
+            description: "Force enable fragment-aware mode for matching boxed digits and fragmented text",
+            getDefaultValue: () => false
+        );
+    }
+
+    private static Option<bool> CreateNoFragmentAwareOption()
+    {
+        return new Option<bool>(
+            aliases: new[] { "--no-fragment-aware" },
+            description: "Force disable fragment-aware mode (use word-based matching only)",
+            getDefaultValue: () => false
+        );
+    }
+
     private static async Task ExecuteRedactCommand(
         string input,
         string output,
         string[] patterns,
         bool isRegex,
         bool caseSensitive,
-        string? savePlan)
+        string? savePlan,
+        bool fragmentAware,
+        bool noFragmentAware)
     {
         try
         {
@@ -113,6 +139,29 @@ public static class RedactCommand
             Console.WriteLine($"Patterns ({patterns.Length}): {string.Join(", ", patterns)}");
             Console.WriteLine($"Mode: {(isRegex ? "Regex" : "Literal")}");
             Console.WriteLine($"Case-sensitive: {caseSensitive}");
+            
+            // Determine fragment-aware setting
+            bool? fragmentAwareSetting = null;
+            if (fragmentAware && noFragmentAware)
+            {
+                Console.Error.WriteLine("Error: Cannot specify both --fragment-aware and --no-fragment-aware");
+                Environment.Exit(1);
+            }
+            else if (fragmentAware)
+            {
+                fragmentAwareSetting = true;
+                Console.WriteLine($"Fragment-aware: enabled (forced)");
+            }
+            else if (noFragmentAware)
+            {
+                fragmentAwareSetting = false;
+                Console.WriteLine($"Fragment-aware: disabled (forced)");
+            }
+            else
+            {
+                Console.WriteLine($"Fragment-aware: auto-detect (enabled for numeric patterns)");
+            }
+            
             Console.WriteLine();
 
             // Step 1: Create redaction plan
@@ -120,7 +169,8 @@ public static class RedactCommand
             {
                 Pattern = p,
                 IsRegex = isRegex,
-                CaseSensitive = caseSensitive
+                CaseSensitive = caseSensitive,
+                FragmentAware = fragmentAwareSetting
             }).ToList();
 
             var locator = new PdfPigTextLocator();

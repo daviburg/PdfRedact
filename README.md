@@ -5,6 +5,7 @@ PdfRedact is a free, open-source .NET 8 tool for masking sensitive text in PDFs.
 ## Features
 
 - **Text Location**: Uses PdfPig to locate sensitive text via regex patterns or literal text matching
+- **Fragment-Aware Matching**: Intelligently handles "boxed digits" and fragmented text sequences (common in government forms like IRS Form 8879)
 - **Redaction Masking**: Applies opaque black overlays using PDFsharp to visually hide sensitive information
 - **Two-Step Workflow**: Create redaction plans first, review them, then apply
 - **One-Step Workflow**: Combine plan creation and application in a single command
@@ -92,6 +93,8 @@ dotnet run --project src/PdfRedact.CLI/PdfRedact.CLI.csproj -- plan \
 - `-p, --pattern` (required): Text pattern(s) to redact (can specify multiple times)
 - `-r, --regex`: Treat patterns as regular expressions (default: false)
 - `-c, --case-sensitive`: Case-sensitive matching (default: true)
+- `--fragment-aware`: Force enable fragment-aware mode for boxed digits/fragmented text
+- `--no-fragment-aware`: Force disable fragment-aware mode (use word-based matching only)
 
 #### 2. `apply` - Apply a Redaction Plan
 
@@ -134,6 +137,68 @@ dotnet run --project src/PdfRedact.CLI/PdfRedact.CLI.csproj -- redact \
 - `-r, --regex`: Treat patterns as regular expressions (default: false)
 - `-c, --case-sensitive`: Case-sensitive matching (default: true)
 - `-s, --save-plan`: Optional path to save the redaction plan
+- `--fragment-aware`: Force enable fragment-aware mode for boxed digits/fragmented text
+- `--no-fragment-aware`: Force disable fragment-aware mode (use word-based matching only)
+
+## Fragment-Aware Matching
+
+PdfRedact includes intelligent fragment-aware matching for handling "boxed digits" and other fragmented text sequences commonly found in government forms (e.g., IRS Form 8879) and standardized documents where each character is placed in a separate box.
+
+### How It Works
+
+- **Two-Pass Tokenization**: First creates conservative word tokens with tight spacing, then joins adjacent single-digit tokens into digit-run tokens with permissive spacing
+- **Conservative Auto-Detection**: Automatically enabled only for literal numeric patterns (e.g., "1234", "5678-9012") to avoid false positives
+- **Explicit Control**: For regex patterns or mixed content, use `--fragment-aware` flag to enable
+
+### When to Use
+
+Fragment-aware mode is ideal for:
+- Tax forms with boxed SSN or EIN fields
+- Government forms with separated digit entry fields
+- Standardized forms where each character has its own box
+- Any PDF where numeric sequences are visually fragmented
+
+**Important**: For regex patterns like `\d{4}`, you must explicitly enable fragment-aware mode with the `--fragment-aware` flag. Auto-detection only works for literal numeric patterns to prevent over-redaction.
+
+### Usage
+
+```bash
+# Literal numeric patterns - auto-enabled
+dotnet run --project src/PdfRedact.CLI/PdfRedact.CLI.csproj -- plan \
+  -i form8879.pdf \
+  -o plan.json \
+  -p "1234"
+
+# Regex patterns - requires explicit flag
+dotnet run --project src/PdfRedact.CLI/PdfRedact.CLI.csproj -- plan \
+  -i form8879.pdf \
+  -o plan.json \
+  -p "\d{4}" \
+  --regex \
+  --fragment-aware
+
+# Force enable for all patterns
+dotnet run --project src/PdfRedact.CLI/PdfRedact.CLI.csproj -- plan \
+  -i form.pdf \
+  -o plan.json \
+  -p "ABC123" \
+  --fragment-aware
+
+# Force disable to use only word-based matching
+dotnet run --project src/PdfRedact.CLI/PdfRedact.CLI.csproj -- plan \
+  -i document.pdf \
+  -o plan.json \
+  -p "1234" \
+  --no-fragment-aware
+```
+
+### Tuning
+
+The algorithm uses a two-pass approach to avoid over-redaction:
+1. **Word Formation** (Pass 1): Conservative gap threshold of 1.5× median width or 0.5× median height
+2. **Digit-Run Formation** (Pass 2): Permissive gap threshold of 5× median width or 2.5× median height, but only joins single-digit tokens
+
+This ensures that only actual digit sequences are joined, preventing entire lines from being redacted.
 
 ## Examples
 
@@ -162,6 +227,24 @@ dotnet run --project src/PdfRedact.CLI/PdfRedact.CLI.csproj -- redact \
   -o redacted.pdf \
   -p "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}" \
   --regex
+```
+
+### Redact Boxed Digits (Government Forms)
+```bash
+# Redact last 4 digits of SSN in form with boxed entry fields
+# Note: Regex patterns require explicit --fragment-aware flag
+dotnet run --project src/PdfRedact.CLI/PdfRedact.CLI.csproj -- redact \
+  -i form8879.pdf \
+  -o redacted.pdf \
+  -p "\d{4}" \
+  --regex \
+  --fragment-aware
+
+# Literal numeric patterns auto-enable fragment-aware mode
+dotnet run --project src/PdfRedact.CLI/PdfRedact.CLI.csproj -- redact \
+  -i form8879.pdf \
+  -o redacted.pdf \
+  -p "5678"
 ```
 
 ### Review Before Applying
