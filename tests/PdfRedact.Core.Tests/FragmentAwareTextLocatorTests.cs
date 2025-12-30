@@ -10,7 +10,7 @@ namespace PdfRedact.Core.Tests;
 /// <summary>
 /// Tests for fragment-aware text location (boxed digits and fragmented glyphs).
 /// </summary>
-public class FragmentAwareTextLocatorTests
+public class FragmentAwareTextLocatorTests : IDisposable
 {
     private readonly string _testDir;
 
@@ -23,6 +23,22 @@ public class FragmentAwareTextLocatorTests
         if (GlobalFontSettings.FontResolver == null)
         {
             GlobalFontSettings.FontResolver = new FailsafeFontResolver();
+        }
+    }
+
+    public void Dispose()
+    {
+        // Cleanup test directory
+        if (Directory.Exists(_testDir))
+        {
+            try
+            {
+                Directory.Delete(_testDir, recursive: true);
+            }
+            catch
+            {
+                // Best effort cleanup - ignore errors
+            }
         }
     }
 
@@ -56,9 +72,6 @@ public class FragmentAwareTextLocatorTests
         Assert.Equal("1234", region.RulePattern);
         Assert.True(region.Width > 0);
         Assert.True(region.Height > 0);
-
-        // Cleanup
-        File.Delete(pdfPath);
     }
 
     [Fact]
@@ -90,8 +103,6 @@ public class FragmentAwareTextLocatorTests
         Assert.Equal("5678", region.MatchedText);
         Assert.Equal(@"\d{4}", region.RulePattern);
 
-        // Cleanup
-        File.Delete(pdfPath);
     }
 
     [Fact]
@@ -118,8 +129,6 @@ public class FragmentAwareTextLocatorTests
         Assert.Equal(1, plan.TotalRedactions);
         Assert.Single(plan.Regions);
 
-        // Cleanup
-        File.Delete(pdfPath);
     }
 
     [Fact]
@@ -146,8 +155,6 @@ public class FragmentAwareTextLocatorTests
         Assert.Equal(0, plan.TotalRedactions);
         Assert.Empty(plan.Regions);
 
-        // Cleanup
-        File.Delete(pdfPath);
     }
 
     [Fact]
@@ -174,8 +181,6 @@ public class FragmentAwareTextLocatorTests
         Assert.Single(plan.Regions);
         Assert.Equal("123456789", plan.Regions[0].MatchedText);
 
-        // Cleanup
-        File.Delete(pdfPath);
     }
 
     [Fact]
@@ -201,8 +206,6 @@ public class FragmentAwareTextLocatorTests
         Assert.Equal(2, plan.TotalRedactions);
         Assert.Equal(2, plan.Regions.Count);
 
-        // Cleanup
-        File.Delete(pdfPath);
     }
 
     [Fact]
@@ -235,8 +238,6 @@ public class FragmentAwareTextLocatorTests
         Assert.Equal(2, plan.TotalRedactions);
         Assert.Equal(2, plan.Regions.Count);
 
-        // Cleanup
-        File.Delete(pdfPath);
     }
 
     /// <summary>

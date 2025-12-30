@@ -190,6 +190,8 @@ public class PdfPigTextLocator : ITextLocator
     /// <summary>
     /// Builds a searchable text string from tokens with deterministic span mapping.
     /// Each token is separated by a single space delimiter.
+    /// Returns a tuple of (searchable text, span mappings) where each TokenSpan
+    /// maps a substring range [StartIndex, EndIndex) to its corresponding Token with bounding box.
     /// </summary>
     private (string searchText, List<TokenSpan> tokenSpans) BuildSearchableTextFromTokens(List<Token> tokens)
     {
@@ -468,9 +470,11 @@ public class PdfPigTextLocator : ITextLocator
     /// </summary>
     private class FragmentAwareTokenizer
     {
-        private const double DefaultGapThresholdMultiplier = 5.0;  // Increased to handle boxed forms with wider spacing
-        private const double HeightBasedGapMultiplier = 2.5;  // Increased for better form field handling
-        private const double MinGapThreshold = 2.0;
+        // Threshold multipliers tuned for typical government form spacing (20-25 pt gaps)
+        // where each character occupies ~5-7 pt width
+        private const double DefaultGapThresholdMultiplier = 5.0;  // 5× width handles ~25pt gaps
+        private const double HeightBasedGapMultiplier = 2.5;       // 2.5× height adapts to font size
+        private const double MinGapThreshold = 2.0;                 // Minimum to avoid joining touching chars
 
         public List<Token> TokenizePage(Page page)
         {
@@ -553,10 +557,13 @@ public class PdfPigTextLocator : ITextLocator
             var sorted = lineLetters.OrderBy(l => l.GlyphRectangle.Left).ToList();
 
             // Calculate gap threshold for run formation
-            var gapThreshold = Math.Max(
-                MinGapThreshold,
-                Math.Max(medianWidth * DefaultGapThresholdMultiplier, medianHeight * HeightBasedGapMultiplier)
-            );
+            // Use the maximum of three thresholds to handle various spacing scenarios:
+            // - MinGapThreshold (2pt): minimum to avoid joining touching characters
+            // - Width-based (5× median): handles typical form field spacing (20-25pt)
+            // - Height-based (2.5× median): adaptive to font size, handles larger fonts
+            var widthThreshold = medianWidth * DefaultGapThresholdMultiplier;
+            var heightThreshold = medianHeight * HeightBasedGapMultiplier;
+            var gapThreshold = Math.Max(MinGapThreshold, Math.Max(widthThreshold, heightThreshold));
 
             var tokens = new List<Token>();
             var currentRun = new List<Letter> { sorted[0] };
@@ -569,8 +576,8 @@ public class PdfPigTextLocator : ITextLocator
                 // Calculate gap between letters
                 var gap = currLetter.GlyphRectangle.Left - prevLetter.GlyphRectangle.Right;
 
-                // Check if we should continue the current run or start a new one
-                if (gap <= gapThreshold && ShouldJoinLetters(prevLetter, currLetter))
+                // Continue current run if gap is within threshold
+                if (gap <= gapThreshold)
                 {
                     currentRun.Add(currLetter);
                 }
@@ -589,13 +596,6 @@ public class PdfPigTextLocator : ITextLocator
             }
 
             return tokens;
-        }
-
-        private bool ShouldJoinLetters(Letter prev, Letter curr)
-        {
-            // Join if both are single characters (typical in boxed forms)
-            // This allows joining digits, letters, or mixed content within reasonable gaps
-            return true;
         }
 
         private Token CreateTokenFromLetters(List<Letter> letters)
