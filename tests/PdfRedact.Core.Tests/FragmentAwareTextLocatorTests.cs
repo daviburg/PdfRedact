@@ -273,6 +273,164 @@ public class FragmentAwareTextLocatorTests : IDisposable
         Assert.True(region.Width < 150, $"Region width {region.Width} is too large, suggesting over-redaction");
     }
 
+    [Fact]
+    public void TwoPassDetection_FragmentAwareOn_FindsContiguousAndBoxedDigits()
+    {
+        // Arrange: Create a PDF with both contiguous "***-**-1234" and boxed "1 2 3 4"
+        var pdfPath = Path.Combine(_testDir, "two_pass_detection.pdf");
+        CreatePdfWithContiguousAndBoxedDigits(pdfPath);
+
+        var rule = new RedactionRule
+        {
+            Pattern = "1234",
+            IsRegex = false,
+            FragmentAware = true  // Force enable fragment-aware
+        };
+
+        var locator = new PdfPigTextLocator();
+
+        // Act
+        var plan = locator.LocateText(pdfPath, new[] { rule });
+
+        // Assert - Should find BOTH occurrences (contiguous and boxed)
+        Assert.Equal(2, plan.TotalRedactions);
+        Assert.Equal(2, plan.Regions.Count);
+        
+        // Both regions should have matched "1234"
+        Assert.All(plan.Regions, r => Assert.Equal("1234", r.MatchedText));
+    }
+
+    [Fact]
+    public void TwoPassDetection_SearchContiguousPattern_WithFragmentAwareOn()
+    {
+        // Arrange: Create a PDF with contiguous "***-**-1234" and boxed "1 2 3 4"
+        var pdfPath = Path.Combine(_testDir, "contiguous_search.pdf");
+        CreatePdfWithContiguousAndBoxedDigits(pdfPath);
+
+        var rule = new RedactionRule
+        {
+            Pattern = "***-**-1234",
+            IsRegex = false,
+            FragmentAware = true  // Even with fragment-aware enabled
+        };
+
+        var locator = new PdfPigTextLocator();
+
+        // Act
+        var plan = locator.LocateText(pdfPath, new[] { rule });
+
+        // Assert - Should find the contiguous text even with fragment-aware enabled
+        Assert.Equal(1, plan.TotalRedactions);
+        Assert.Single(plan.Regions);
+        
+        var region = plan.Regions[0];
+        Assert.Equal("***-**-1234", region.MatchedText);
+    }
+
+    [Fact]
+    public void TwoPassDetection_RegexPattern_FindsBothOccurrences()
+    {
+        // Arrange: Create a PDF with contiguous "***-**-1234" and boxed "1 2 3 4"
+        var pdfPath = Path.Combine(_testDir, "regex_two_pass.pdf");
+        CreatePdfWithContiguousAndBoxedDigits(pdfPath);
+
+        var rule = new RedactionRule
+        {
+            Pattern = @"\d{4}",
+            IsRegex = true,
+            // FragmentAware = null (auto-detect should enable for \d{4})
+        };
+
+        var locator = new PdfPigTextLocator();
+
+        // Act
+        var plan = locator.LocateText(pdfPath, new[] { rule });
+
+        // Assert - Should find both: "1234" from contiguous and boxed
+        Assert.Equal(2, plan.TotalRedactions);
+        Assert.Equal(2, plan.Regions.Count);
+        
+        // Both should match "1234"
+        Assert.All(plan.Regions, r => Assert.Equal("1234", r.MatchedText));
+    }
+
+    [Fact]
+    public void TwoPassDetection_FragmentAwareOff_FindsOnlyContiguous()
+    {
+        // Arrange: Create a PDF with contiguous "***-**-1234" and boxed "1 2 3 4"
+        var pdfPath = Path.Combine(_testDir, "fragment_aware_off.pdf");
+        CreatePdfWithContiguousAndBoxedDigits(pdfPath);
+
+        var rule = new RedactionRule
+        {
+            Pattern = "1234",
+            IsRegex = false,
+            FragmentAware = false  // Explicitly disabled
+        };
+
+        var locator = new PdfPigTextLocator();
+
+        // Act
+        var plan = locator.LocateText(pdfPath, new[] { rule });
+
+        // Assert - Should find only the contiguous occurrence (not boxed digits)
+        Assert.Equal(1, plan.TotalRedactions);
+        Assert.Single(plan.Regions);
+        
+        var region = plan.Regions[0];
+        Assert.Equal("1234", region.MatchedText);
+    }
+
+    [Fact]
+    public void AutoDetect_LiteralNumericPattern_EnablesFragmentAware()
+    {
+        // Arrange: Create a PDF with boxed digits
+        var pdfPath = Path.Combine(_testDir, "auto_detect_literal.pdf");
+        CreatePdfWithBoxedDigits(pdfPath, "5678", spacing: 15);
+
+        var rule = new RedactionRule
+        {
+            Pattern = "5678",  // Literal numeric pattern
+            IsRegex = false,
+            FragmentAware = null  // Auto-detect should enable
+        };
+
+        var locator = new PdfPigTextLocator();
+
+        // Act
+        var plan = locator.LocateText(pdfPath, new[] { rule });
+
+        // Assert - Should find the boxed digits via auto-detect
+        Assert.Equal(1, plan.TotalRedactions);
+        Assert.Single(plan.Regions);
+        Assert.Equal("5678", plan.Regions[0].MatchedText);
+    }
+
+    [Fact]
+    public void AutoDetect_RegexDigitPattern_EnablesFragmentAware()
+    {
+        // Arrange: Create a PDF with boxed digits
+        var pdfPath = Path.Combine(_testDir, "auto_detect_regex.pdf");
+        CreatePdfWithBoxedDigits(pdfPath, "9876", spacing: 15);
+
+        var rule = new RedactionRule
+        {
+            Pattern = @"\d{4}",  // Regex with \d{4}
+            IsRegex = true,
+            FragmentAware = null  // Auto-detect should enable
+        };
+
+        var locator = new PdfPigTextLocator();
+
+        // Act
+        var plan = locator.LocateText(pdfPath, new[] { rule });
+
+        // Assert - Should find the boxed digits via auto-detect
+        Assert.Equal(1, plan.TotalRedactions);
+        Assert.Single(plan.Regions);
+        Assert.Equal("9876", plan.Regions[0].MatchedText);
+    }
+
     /// <summary>
     /// Creates a test PDF with individual digits spaced apart (simulating boxed form fields).
     /// </summary>
@@ -291,6 +449,33 @@ public class FragmentAwareTextLocatorTests : IDisposable
         {
             gfx.DrawString(digit.ToString(), font, XBrushes.Black, x, y);
             x += spacing;
+        }
+
+        document.Save(pdfPath);
+        document.Close();
+    }
+
+    /// <summary>
+    /// Creates a PDF with both contiguous text and boxed digits.
+    /// Used to test the two-pass detection approach.
+    /// </summary>
+    private void CreatePdfWithContiguousAndBoxedDigits(string pdfPath)
+    {
+        var document = new PdfDocument();
+        var page = document.AddPage();
+        var gfx = XGraphics.FromPdfPage(page);
+        var font = new XFont("Arial", 12);
+
+        // Contiguous text: "***-**-1234" drawn as a single string
+        gfx.DrawString("***-**-1234", font, XBrushes.Black, 100, 450);
+
+        // Boxed digits: each digit of "1234" drawn separately with spacing
+        double x = 100;
+        double y = 400;
+        foreach (var digit in "1234")
+        {
+            gfx.DrawString(digit.ToString(), font, XBrushes.Black, x, y);
+            x += 20;
         }
 
         document.Save(pdfPath);
