@@ -253,7 +253,12 @@ dotnet test
 
 - **Visual Redaction**: The `redact` command applies opaque masks over text. The underlying text remains in the PDF file structure.
 - **Maximum Security**: Use the `flatten` command after redaction to convert pages to bitmap images, completely removing text layers.
-- **Flattening is Irreversible**: Once flattened, text cannot be recovered. The PDF becomes image-only.
+  - **Guarantee**: Flattened PDFs contain NO extractable text - verified by automated tests
+  - **Implementation**: Uses PDFium-based rendering to create image-only PDFs
+  - **Irreversible**: Once flattened, text cannot be recovered
+- **Platform Requirements**: Flatten command requires PDFium native libraries (included via PDFtoImage package)
+  - Supported: Windows, Linux, macOS
+  - Runtime validation will provide clear error if PDFium cannot be loaded
 - **Review Plans**: Always review redaction plans before applying to ensure correct regions are identified.
 - **Test First**: Test on sample documents to verify patterns match correctly.
 - **Recommended Workflow**: `redact` → `flatten` for forensically secure redaction.
