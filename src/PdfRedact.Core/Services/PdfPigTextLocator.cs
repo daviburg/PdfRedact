@@ -15,6 +15,7 @@ namespace PdfRedact.Core.Services;
 public class PdfPigTextLocator : ITextLocator
 {
     private const double LineGroupingTolerance = 2.0; // Points tolerance for grouping words on same line
+    private const double OverlapThreshold = 0.5; // Minimum intersection area (as fraction of smaller region) to consider regions as overlapping
 
     /// <inheritdoc/>
     public RedactionPlan LocateText(string pdfPath, IEnumerable<RedactionRule> rules)
@@ -196,7 +197,8 @@ public class PdfPigTextLocator : ITextLocator
     }
 
     /// <summary>
-    /// Determines if two regions overlap significantly (>50% intersection area).
+    /// Determines if two regions overlap significantly.
+    /// Uses OverlapThreshold constant to determine minimum intersection area.
     /// </summary>
     private bool RegionsOverlap(RedactionRegion a, RedactionRegion b)
     {
@@ -218,8 +220,8 @@ public class PdfPigTextLocator : ITextLocator
         var areaB = b.Width * b.Height;
         var minArea = Math.Min(areaA, areaB);
 
-        // Consider overlapping if intersection is more than 50% of the smaller region
-        return intersectionArea > (minArea * 0.5);
+        // Consider overlapping if intersection exceeds threshold of the smaller region
+        return intersectionArea > (minArea * OverlapThreshold);
     }
 
     /// <summary>
