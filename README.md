@@ -1,12 +1,13 @@
 # PdfRedact
 
-PdfRedact is a free, open-source .NET 8 tool for masking sensitive text in PDFs. It detects text using configurable rules, applies visual mask overlays with PDFsharp, and is structured for future enhancements like flattening pages into image-only PDFs to prevent underlying text extraction.
+PdfRedact is a free, open-source .NET 8 tool for masking sensitive text in PDFs. It detects text using configurable rules, applies visual mask overlays with PDFsharp, and includes page flattening to convert PDFs to image-only format, preventing underlying text extraction.
 
 ## Features
 
 - **Text Location**: Uses PdfPig to locate sensitive text via regex patterns or literal text matching
 - **Fragment-Aware Matching**: Intelligently handles "boxed digits" and fragmented text sequences (common in government forms like IRS Form 8879)
 - **Redaction Masking**: Applies opaque black overlays using PDFsharp to visually hide sensitive information
+- **Page Flattening**: Converts PDFs to image-only format, removing all text layers for maximum security
 - **Two-Step Workflow**: Create redaction plans first, review them, then apply
 - **One-Step Workflow**: Combine plan creation and application in a single command
 - **Case-Sensitive/Insensitive Matching**: Flexible text matching options
@@ -23,11 +24,11 @@ PdfRedact/
 │   │   ├── Models/              # Data models (RedactionPlan, RedactionRegion, RedactionRule)
 │   │   └── Services/            # Services (text location, mask application, serialization)
 │   └── PdfRedact.CLI/           # Command-line interface
-│       └── Commands/            # CLI commands (plan, apply, redact)
+│       └── Commands/            # CLI commands (plan, apply, redact, flatten)
 ├── tests/
 │   └── PdfRedact.Core.Tests/   # Unit tests for Core library
 └── docs/
-    └── FLATTEN_MODE.md          # Future enhancement documentation
+    └── FLATTEN_MODE.md          # Flatten mode documentation
 ```
 
 ## Installation
@@ -200,6 +201,30 @@ The algorithm uses a two-pass approach to avoid over-redaction:
 
 This ensures that only actual digit sequences are joined, preventing entire lines from being redacted.
 
+#### 4. `flatten` - Convert PDF to Image-Only Format
+
+Flatten a PDF by converting each page to a bitmap image, removing all text layers:
+
+```bash
+# Flatten a PDF with default 300 DPI
+dotnet run --project src/PdfRedact.CLI/PdfRedact.CLI.csproj -- flatten \
+  -i input.pdf \
+  -o flattened.pdf
+
+# Flatten with custom DPI for smaller file size
+dotnet run --project src/PdfRedact.CLI/PdfRedact.CLI.csproj -- flatten \
+  -i input.pdf \
+  -o flattened.pdf \
+  --dpi 150
+```
+
+**Options:**
+- `-i, --input` (required): Input PDF file path
+- `-o, --output` (required): Output flattened PDF file path
+- `-d, --dpi`: Resolution for rendering (default: 300, range: 72-600)
+
+**Note:** Flattening is useful after redaction to ensure no underlying text can be extracted. Higher DPI produces better quality but larger files.
+
 ## Examples
 
 ### Redact Social Security Numbers
@@ -263,6 +288,21 @@ dotnet run --project src/PdfRedact.CLI/PdfRedact.CLI.csproj -- apply \
   -o redacted.pdf
 ```
 
+### Secure Redaction with Flattening
+```bash
+# Step 1: Redact sensitive content
+dotnet run --project src/PdfRedact.CLI/PdfRedact.CLI.csproj -- redact \
+  -i document.pdf \
+  -o redacted.pdf \
+  -p "\d{3}-\d{2}-\d{4}" \
+  --regex
+
+# Step 2: Flatten to remove all text layers
+dotnet run --project src/PdfRedact.CLI/PdfRedact.CLI.csproj -- flatten \
+  -i redacted.pdf \
+  -o secure-redacted.pdf
+```
+
 ## Redaction Plan Format
 
 The redaction plan is stored as JSON:
@@ -294,22 +334,23 @@ dotnet test
 
 ## Security Considerations
 
-- **Visual Redaction Only**: Current implementation applies opaque masks over text. The underlying text remains in the PDF file structure.
-- **Not Forensically Secure**: For maximum security, see the planned [Flatten Mode](docs/FLATTEN_MODE.md) which will render pages to bitmap images.
+- **Visual Redaction**: The `redact` command applies opaque masks over text. The underlying text remains in the PDF file structure.
+- **Maximum Security**: Use the `flatten` command after redaction to convert pages to bitmap images, completely removing text layers.
+  - **Guarantee**: Flattened PDFs contain NO extractable text - verified by automated tests
+  - **Implementation**: Uses PDFium-based rendering to create image-only PDFs
+  - **Irreversible**: Once flattened, text cannot be recovered
+- **Platform Requirements**: Flatten command requires PDFium native libraries (included via PDFtoImage package)
+  - Supported: Windows, Linux, macOS
+  - Runtime validation will provide clear error if PDFium cannot be loaded
 - **Review Plans**: Always review redaction plans before applying to ensure correct regions are identified.
 - **Test First**: Test on sample documents to verify patterns match correctly.
-
-## Future Enhancements
-
-See [docs/FLATTEN_MODE.md](docs/FLATTEN_MODE.md) for planned features including:
-- Page flattening to bitmap PDFs
-- Complete text layer removal
-- Enhanced security for forensic scenarios
+- **Recommended Workflow**: `redact` → `flatten` for forensically secure redaction.
 
 ## Dependencies
 
 - **PdfPig** (0.1.13): Text extraction and location
 - **PDFsharp** (6.2.3): PDF manipulation and rendering
+- **PDFtoImage** (5.2.0): PDF to image conversion for flattening
 - **System.CommandLine** (2.0.0-beta4): CLI framework
 
 ## Contributing
@@ -332,6 +373,10 @@ This project uses the following third-party libraries:
   - Used for PDF manipulation and rendering
   - Copyright © 2005-2024 empira Software GmbH
 
+- **PDFtoImage** (5.2.0) - Licensed under [MIT License](https://github.com/sungaila/PDFtoImage/blob/master/LICENSE)
+  - Used for PDF page rendering to images (flattening)
+  - Copyright © 2021-2024 David Sungaila
+
 - **System.CommandLine** (2.0.0-beta4) - Licensed under [MIT License](https://github.com/dotnet/command-line-api/blob/main/LICENSE.md)
   - Used for command-line interface framework
   - Copyright © .NET Foundation and Contributors
@@ -343,3 +388,4 @@ For complete license texts and additional dependencies, please refer to the indi
 Built with:
 - [PdfPig](https://github.com/UglyToad/PdfPig) - PDF text extraction
 - [PDFsharp](https://www.pdfsharp.net/) - PDF creation and manipulation
+- [PDFtoImage](https://github.com/sungaila/PDFtoImage) - PDF to image conversion
