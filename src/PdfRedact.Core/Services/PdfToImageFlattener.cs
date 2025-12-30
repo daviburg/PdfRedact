@@ -51,7 +51,6 @@ public class PdfToImageFlattener : IPageFlattener
         using var pdfStream = File.OpenRead(sourcePath);
         var renderOptions = new PDFtoImage.RenderOptions(Dpi: dpi);
         
-        var pageIndex = 0;
         foreach (var bitmap in PDFtoImage.Conversion.ToImages(pdfStream, options: renderOptions))
         {
             using (bitmap)
@@ -76,8 +75,6 @@ public class PdfToImageFlattener : IPageFlattener
                 using var image = XImage.FromStream(stream);
                 graphics.DrawImage(image, 0, 0, page.Width.Point, page.Height.Point);
             }
-
-            pageIndex++;
         }
 
         // Save the flattened PDF
