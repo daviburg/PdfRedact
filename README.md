@@ -235,7 +235,25 @@ Contributions are welcome! Please feel free to submit pull requests or open issu
 
 ## License
 
-See [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Third-Party Licenses
+
+This project uses the following third-party libraries:
+
+- **PdfPig** (0.1.13) - Licensed under [Apache License 2.0](https://github.com/UglyToad/PdfPig/blob/master/LICENSE)
+  - Used for PDF text extraction and location
+  - Copyright © 2017-2024 UglyToad Software
+
+- **PDFsharp** (6.2.3) - Licensed under [MIT License](https://github.com/empira/PDFsharp/blob/master/LICENSE.md)
+  - Used for PDF manipulation and rendering
+  - Copyright © 2005-2024 empira Software GmbH
+
+- **System.CommandLine** (2.0.0-beta4) - Licensed under [MIT License](https://github.com/dotnet/command-line-api/blob/main/LICENSE.md)
+  - Used for command-line interface framework
+  - Copyright © .NET Foundation and Contributors
+
+For complete license texts and additional dependencies, please refer to the individual package documentation.
 
 ## Credits
 
